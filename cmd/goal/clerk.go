@@ -45,6 +45,7 @@ var (
 	account         string
 	amount          uint64
 	txFilename      string
+	txFilenames     []string
 	rejectsFilename string
 	closeToAddress  string
 	noProgramOutput bool
@@ -110,10 +111,9 @@ func init() {
 	signCmd.MarkFlagRequired("infile")
 	signCmd.MarkFlagRequired("outfile")
 
-	groupCmd.Flags().StringVarP(&txFilename, "infile", "i", "", "File storing transactions to be grouped")
+	groupCmd.Flags().StringArrayVarP(&txFilenames, "infile", "i", nil, "File storing transactions to be grouped")
 	groupCmd.Flags().StringVarP(&outFilename, "outfile", "o", "", "Filename for writing the grouped transactions")
 	groupCmd.MarkFlagRequired("infile")
-	groupCmd.MarkFlagRequired("outfile")
 
 	splitCmd.Flags().StringVarP(&txFilename, "infile", "i", "", "File storing transactions to be split")
 	splitCmd.Flags().StringVarP(&outFilename, "outfile", "o", "", "Base filename for writing the individual transactions; each transaction will be written to filename-N.ext")
@@ -808,49 +808,64 @@ var groupCmd = &cobra.Command{
 	Long:  `Form a transaction group.  The input file must contain one or more unsigned transactions that will form a group.  The output file will contain the same transactions, in order, with a group flag added to each transaction, which requires that the transactions must be committed together. The group command would retain the logic signature, if present, as the TEAL program could verify the group using a logic signature argument.`,
 	Args:  validateNoPosArgsFn,
 	Run: func(cmd *cobra.Command, args []string) {
-		data, err := readFile(txFilename)
-		if err != nil {
-			reportErrorf(fileReadError, txFilename, err)
-		}
 
-		dec := protocol.NewDecoderBytes(data)
+		var (
+			transactionIdx int
+			stxns          []transactions.SignedTxn
+			group          transactions.TxGroup
+			outData        []byte
+		)
 
-		var stxns []transactions.SignedTxn
-		var group transactions.TxGroup
-		transactionIdx := 0
-		for {
-			var stxn transactions.SignedTxn
-			// we decode the file into a SignedTxn since we want to verify the absense of the signature as well as preserve the AuthAddr.
-			err = dec.Decode(&stxn)
-			if err == io.EOF {
-				break
-			}
+		for _, txFilename := range txFilenames {
+			data, err := readFile(txFilename)
 			if err != nil {
-				reportErrorf(txDecodeError, txFilename, err)
+				reportErrorf(fileReadError, txFilename, err)
 			}
 
-			if !stxn.Txn.Group.IsZero() {
-				reportErrorf("Transaction #%d with ID of %s is already part of a group.", transactionIdx, stxn.ID().String())
+			dec := protocol.NewDecoderBytes(data)
+
+			for {
+				var stxn transactions.SignedTxn
+				// we decode the file into a SignedTxn since we want to verify the absense of the signature as well as preserve the AuthAddr.
+				err = dec.Decode(&stxn)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					reportErrorf(txDecodeError, txFilename, err)
+				}
+
+				if !stxn.Txn.Group.IsZero() {
+					reportErrorf("Transaction #%d with ID of %s is already part of a group.", transactionIdx, stxn.ID().String())
+				}
+
+				if (!stxn.Sig.Blank()) || (!stxn.Msig.Blank()) {
+					reportErrorf("Transaction #%d with ID of %s is already signed", transactionIdx, stxn.ID().String())
+				}
+
+				stxns = append(stxns, stxn)
+				group.TxGroupHashes = append(group.TxGroupHashes, crypto.HashObj(stxn.Txn))
+				transactionIdx++
 			}
 
-			if (!stxn.Sig.Blank()) || (!stxn.Msig.Blank()) {
-				reportErrorf("Transaction #%d with ID of %s is already signed", transactionIdx, stxn.ID().String())
+			for _, stxn := range stxns {
+				stxn.Txn.Group = crypto.HashObj(group)
+				outData = append(outData, protocol.Encode(&stxn)...)
 			}
 
-			stxns = append(stxns, stxn)
-			group.TxGroupHashes = append(group.TxGroupHashes, crypto.HashObj(stxn.Txn))
-			transactionIdx++
+			if outFilename == "" {
+				err = writeFile(txFilename, outData, 0600)
+				if err != nil {
+					reportErrorf(fileWriteError, txFilename, err)
+				}
+				outData = nil
+			}
 		}
 
-		var outData []byte
-		for _, stxn := range stxns {
-			stxn.Txn.Group = crypto.HashObj(group)
-			outData = append(outData, protocol.Encode(&stxn)...)
-		}
-
-		err = writeFile(outFilename, outData, 0600)
-		if err != nil {
-			reportErrorf(fileWriteError, outFilename, err)
+		if outFilename != "" {
+			if err := writeFile(outFilename, outData, 0600); err != nil {
+				reportErrorf(fileWriteError, outFilename, err)
+			}
 		}
 	},
 }
