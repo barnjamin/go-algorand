@@ -142,16 +142,22 @@ func runBuildNetwork() (err error) {
 		net.GenesisData.VersionModifier = networkGenesisVersionModifier
 	}
 
-	if bootstrapLoadingFile {
-		fileTemplate, err := remote.LoadBootstrappedData(resolveFile(r.BootstrappedFile, templateBaseDir))
+	var bootstrappedFile string
+	if r.BootstrappedFile != "" {
+		bootstrappedFile = resolveFile(r.BootstrappedFile, templateBaseDir)
+	}
+	if util.FileExists(bootstrappedFile) && bootstrapLoadingFile {
+		fileTemplate, err := remote.LoadBootstrappedData(bootstrappedFile)
 		if err != nil {
 			return fmt.Errorf("error resolving bootstrap file: %v", err)
 		}
 		net.BootstrappedNet = fileTemplate
+		net.SetUseBoostrappedFiles(bootstrapLoadingFile)
+	} else {
+		net.SetUseBoostrappedFiles(false)
 	}
 
 	net.SetUseExistingGenesisFiles(networkUseGenesisFiles)
-	net.SetUseBoostrappedFiles(bootstrapLoadingFile)
 	err = net.Validate(buildConfig, networkRootDir)
 	if err != nil {
 		return fmt.Errorf("error validating Network Config file: %v", err)
@@ -198,7 +204,6 @@ func resolveFile(filename string, baseDir string) string {
 	if filepath.IsAbs(filename) {
 		return filename
 	}
-
 	// Assume path is relative to the directory of the template file
 	return filepath.Join(baseDir, filename)
 }
